@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
 import io from "socket.io-client";
 
