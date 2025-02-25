@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
 import io from "socket.io-client";
 
@@ -7,16 +7,24 @@ const mapContainerStyle = { width: "100vw", height: "100vh" };
 const defaultCenter = { lat: 37.7749, lng: -122.4194 };
 
 function App() {
-  
-
     const { isLoaded } = useLoadScript({
         googleMapsApiKey: process.env.REACT_APP_GOOGLE_MAPS_API_KEY
     });
-    const [users, setUsers] = useState(new Map()); // Using Map to store user locations
+
+    const [users, setUsers] = useState(new Map());
     const [userLocation, setUserLocation] = useState(null);
     const [map, setMap] = useState(null);
+    const [connectionStatus, setConnectionStatus] = useState('disconnected');
+    const [locationPermission, setLocationPermission] = useState(true);
+    const [error, setError] = useState(null);
 
-    // Handle individual location updates
+    // Error handling
+    const handleError = (error) => {
+        setError(error.message);
+        setTimeout(() => setError(null), 5000);
+    };
+
+    // Location update handlers
     const handleLocationUpdate = useCallback((location) => {
         setUsers(prevUsers => {
             const newUsers = new Map(prevUsers);
@@ -25,7 +33,6 @@ function App() {
         });
     }, []);
 
-    // Handle bulk location updates
     const handleLocationsUpdate = useCallback((locations) => {
         const locationsMap = new Map();
         locations.forEach(location => {
@@ -34,25 +41,52 @@ function App() {
         setUsers(locationsMap);
     }, []);
 
+    // Socket connection management
     useEffect(() => {
         const userId = localStorage.getItem('userId');
-        if (userId) {
-            socket.emit('authenticate', userId);
-        }
+        
+        socket.on('connect', () => {
+            setConnectionStatus('connected');
+            if (userId) {
+                socket.emit('authenticate', userId);
+            }
+        });
 
-        // Listen for individual location updates
+        socket.on('disconnect', () => {
+            setConnectionStatus('disconnected');
+        });
+
+        socket.on('error', (error) => {
+            handleError({ message: error });
+        });
+
+        socket.on('connect_error', (error) => {
+            handleError(error);
+            setConnectionStatus('error');
+        });
+
+        socket.on('permissionsUpdated', (permissions) => {
+            setLocationPermission(permissions.locationSharing);
+        });
+
         socket.on("locationUpdate", handleLocationUpdate);
-
-        // Listen for bulk location updates
         socket.on("updateLocations", handleLocationsUpdate);
 
         return () => {
+            socket.off('connect');
+            socket.off('disconnect');
+            socket.off('error');
+            socket.off('connect_error');
+            socket.off('permissionsUpdated');
             socket.off("locationUpdate");
             socket.off("updateLocations");
         };
     }, [handleLocationUpdate, handleLocationsUpdate]);
 
+    // Location tracking
     useEffect(() => {
+        if (!locationPermission) return;
+
         if (navigator.geolocation) {
             const watchId = navigator.geolocation.watchPosition(
                 (position) => {
@@ -61,9 +95,11 @@ function App() {
                         lng: position.coords.longitude
                     };
                     setUserLocation(userLoc);
-                    socket.emit("sendLocation", userLoc);
+                    if (connectionStatus === 'connected') {
+                        socket.emit("sendLocation", userLoc);
+                    }
                 },
-                (error) => console.error("Error getting location:", error),
+                (error) => handleError(error),
                 {
                     enableHighAccuracy: true,
                     maximumAge: 0,
@@ -73,9 +109,9 @@ function App() {
 
             return () => navigator.geolocation.clearWatch(watchId);
         }
-    }, []);
+    }, [connectionStatus, locationPermission]);
 
-    // Auto-center map on user's location
+    // Map auto-centering
     useEffect(() => {
         if (map && userLocation) {
             map.panTo(userLocation);
@@ -86,11 +122,31 @@ function App() {
         setMap(map);
     }, []);
 
+    // Permission toggle component
+    const PermissionToggle = () => (
+        <div className="permission-toggle">
+            <label>
+                Share Location:
+                <input
+                    type="checkbox"
+                    checked={locationPermission}
+                    onChange={(e) => {
+                        setLocationPermission(e.target.checked);
+                        socket.emit('updatePermissions', { locationSharing: e.target.checked });
+                    }}
+                />
+            </label>
+        </div>
+    );
+
     const userId = localStorage.getItem('userId');
 
     return (
         <div>
-
+            {error && <div className="error-message">{error}</div>}
+            <div className="connection-status">Status: {connectionStatus}</div>
+            <PermissionToggle />
+            
             {isLoaded && (
                 <GoogleMap
                     mapContainerStyle={mapContainerStyle}
